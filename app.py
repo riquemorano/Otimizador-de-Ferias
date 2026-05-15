@@ -12,6 +12,11 @@ if "custom_holidays" not in st.session_state:
     st.session_state.custom_holidays = []
 if "disabled_holidays" not in st.session_state:
     st.session_state.disabled_holidays = set()
+# Novos estados para o carregamento progressivo ("Lazy Load" via botão)
+if "all_results" not in st.session_state:
+    st.session_state.all_results = None
+if "display_limit" not in st.session_state:
+    st.session_state.display_limit = 15
 
 # --- LÓGICA DE PARTIÇÃO ---
 def gerar_todas_particoes(n, max_lotes):
@@ -203,10 +208,10 @@ with st.expander("📅 Ativar/Desativar Feriados", expanded=False):
 
 # --- PROCESSAMENTO ---
 h_dict = get_filtered_holidays(d_ini.year, d_fim.year)
-all_results = []
 
 if st.button("🚀 Calcular Possibilidades"):
     with st.spinner("Analisando..."):
+        all_results_temp = []
         for config in configs:
             for p_config in set(itertools.permutations(config)):
                 # Redução de amostragem para evitar lentidão extrema no modo Automático
@@ -216,13 +221,11 @@ if st.button("🚀 Calcular Possibilidades"):
                     if meses_nomes[s_date.month - 1] not in m_sel: continue
                     
                     # No modo 0 dias, só faz sentido se a data for feriado ou colada em um
-                    # Atualizado: respeita os dias selecionados pelo usuário como "não úteis"
                     if total_dias == 0 and s_date not in h_dict and s_date.weekday() not in dias_folga_int:
                         continue
 
                     comb, curr, valid = [], s_date, True
                     for lote in p_config:
-                        # Passamos agora a lista dias_folga_int
                         det = calculate_detail(lote, curr, h_dict, dias_folga_int)
                         if det["fim_real"] > d_fim: valid = False; break
                         comb.append(det)
@@ -231,22 +234,43 @@ if st.button("🚀 Calcular Possibilidades"):
                     if valid:
                         total_g = sum(x["qtd_total"] for x in comb)
                         efi_m = sum(x["eficiencia"] for x in comb)/len(p_config)
-                        all_results.append({
+                        all_results_temp.append({
                             "total": total_g, "efici": efi_m, "comb": comb, 
                             "config": "-".join(map(str, p_config))
                         })
 
-    top = sorted(all_results, key=lambda x: (x["total"], x["efici"]), reverse=True)[:15]
-    if not top: st.warning("Nenhuma combinação encontrada.")
-    for idx, r in enumerate(top):
-        with st.container(border=True):
-            st.subheader(f"Opção #{idx+1} — Divisão: {r['config']} | Total: {r['total']} dias")
-            st.table(pd.DataFrame([{ 
-                "Lote": f"{p['periodo']}d", 
-                "Início": p["inicio"].strftime("%d/%m/%y"), 
-                "Janela Real": f"{p['inicio_real'].strftime('%d/%m')}—{p['fim_real'].strftime('%d/%m')}", 
-                "Feriados": p["feriados"], 
-                "FDS/Folga": p["fds"], # Renomeado visualmente para fazer sentido se a pessoa não trabalhar quarta, por exemplo
-                "Eficiência": f"{p['eficiencia']:.0f}%" if p['eficiencia'] != float('inf') else "Inf%", 
-                "Ganho": f"+{p['qtd_total']}d" 
-            } for p in r["comb"]]))
+        # Salva todos os resultados ordenados no Session State e reseta o limite visual
+        st.session_state.all_results = sorted(all_results_temp, key=lambda x: (x["total"], x["efici"]), reverse=True)
+        st.session_state.display_limit = 15
+
+# --- RENDERIZAÇÃO DOS RESULTADOS ---
+# Como a renderização está fora do 'if st.button', ela sobrevive a recarregamentos de página (ao clicar em "Carregar mais")
+if st.session_state.all_results is not None:
+    resultados = st.session_state.all_results
+    limite = st.session_state.display_limit
+    
+    if not resultados:
+        st.warning("Nenhuma combinação encontrada.")
+    else:
+        st.success(f"🎉 Foram encontradas {len(resultados)} combinações possíveis! Exibindo ordenado da melhor para a pior.")
+        
+        # Exibe apenas a quantidade definida no 'limite'
+        for idx, r in enumerate(resultados[:limite]):
+            with st.container(border=True):
+                st.subheader(f"Opção #{idx+1} — Divisão: {r['config']} | Total: {r['total']} dias")
+                st.table(pd.DataFrame([{ 
+                    "Lote": f"{p['periodo']}d", 
+                    "Início": p["inicio"].strftime("%d/%m/%y"), 
+                    "Janela Real": f"{p['inicio_real'].strftime('%d/%m')}—{p['fim_real'].strftime('%d/%m')}", 
+                    "Feriados": p["feriados"], 
+                    "FDS/Folga": p["fds"], 
+                    "Eficiência": f"{p['eficiencia']:.0f}%" if p['eficiencia'] != float('inf') else "Inf%", 
+                    "Ganho": f"+{p['qtd_total']}d" 
+                } for p in r["comb"]]))
+        
+        # Botão para expandir a lista
+        if limite < len(resultados):
+            st.write(f"Mostrando {limite} de {len(resultados)} opções.")
+            if st.button("🔽 Carregar mais 15 opções", use_container_width=True):
+                st.session_state.display_limit += 15
+                st.rerun()
