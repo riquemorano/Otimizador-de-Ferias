@@ -87,23 +87,23 @@ def get_filtered_holidays(ano_inicio, ano_fim):
     return h_dict
 
 # --- MOTOR DE CÁLCULO ---
-def calculate_detail(period, start_date, holiday_dict):
+def calculate_detail(period, start_date, holiday_dict, dias_folga):
     # O período de folga começa na data escolhida
     first_day = start_date
     last_day = start_date + timedelta(days=max(0, period - 1))
 
-    # Expansão para trás: se o dia anterior for FDS ou feriado ATIVO
+    # Expansão para trás: se o dia anterior for dia de folga rotineira ou feriado ATIVO
     while True:
         prev = first_day - timedelta(days=1)
-        if prev.weekday() >= 5 or prev in holiday_dict:
+        if prev.weekday() in dias_folga or prev in holiday_dict:
             first_day = prev
         else:
             break
 
-    # Expansão para frente: se o dia posterior for FDS ou feriado ATIVO
+    # Expansão para frente: se o dia posterior for dia de folga rotineira ou feriado ATIVO
     while True:
         nxt = last_day + timedelta(days=1)
-        if nxt.weekday() >= 5 or nxt in holiday_dict:
+        if nxt.weekday() in dias_folga or nxt in holiday_dict:
             last_day = nxt
         else:
             break
@@ -113,7 +113,8 @@ def calculate_detail(period, start_date, holiday_dict):
     # Contagem rigorosa baseada apenas no que está no holiday_dict
     feriados_list = [d for d in (first_day + timedelta(n) for n in range(total_days)) if d in holiday_dict]
     feriados = len(feriados_list)
-    fds = sum(1 for d in (first_day + timedelta(n) for n in range(total_days)) if d.weekday() >= 5 and d not in holiday_dict)
+    # Contagem de folgas rotineiras (FDS ou dias escolhidos)
+    fds = sum(1 for d in (first_day + timedelta(n) for n in range(total_days)) if d.weekday() in dias_folga and d not in holiday_dict)
     
     eficiencia = (total_days / period * 100) if period > 0 else float("inf")
     
@@ -141,8 +142,23 @@ with st.sidebar:
     st.header("🔍 Filtros")
     d_ini = st.date_input("Início", datetime.now().date())
     d_fim = st.date_input("Fim", datetime.now().date() + timedelta(days=365))
+    
+    # Novo seletor de dias úteis
+    st.subheader("Dias Úteis da Semana")
+    dias_semana_opcoes = ["Segunda", "Terça", "Quarta", "Quinta", "Sexta", "Sábado", "Domingo"]
+    dias_uteis_selecionados = st.multiselect(
+        "Selecione os dias em que você trabalha:",
+        options=dias_semana_opcoes,
+        default=["Segunda", "Terça", "Quarta", "Quinta", "Sexta"]
+    )
+    
+    # Mapeamento do nome do dia para o índice do weekday() no Python (0 = Segunda ... 6 = Domingo)
+    mapa_dias = {"Segunda": 0, "Terça": 1, "Quarta": 2, "Quinta": 3, "Sexta": 4, "Sábado": 5, "Domingo": 6}
+    # Descobre os dias de folga (o inverso do que o usuário selecionou)
+    dias_folga_int = [mapa_dias[d] for d in dias_semana_opcoes if d not in dias_uteis_selecionados]
+
     meses_nomes = ["Janeiro", "Fevereiro", "Março", "Abril", "Maio", "Junho", "Julho", "Agosto", "Setembro", "Outubro", "Novembro", "Dezembro"]
-    m_sel = st.multiselect("Meses", meses_nomes, default=meses_nomes)
+    m_sel = st.multiselect("Meses permitidos para início", meses_nomes, default=meses_nomes)
 
 st.title("🏝️ Férias Smart")
 
@@ -200,12 +216,14 @@ if st.button("🚀 Calcular Possibilidades"):
                     if meses_nomes[s_date.month - 1] not in m_sel: continue
                     
                     # No modo 0 dias, só faz sentido se a data for feriado ou colada em um
-                    if total_dias == 0 and s_date not in h_dict and s_date.weekday() < 5:
+                    # Atualizado: respeita os dias selecionados pelo usuário como "não úteis"
+                    if total_dias == 0 and s_date not in h_dict and s_date.weekday() not in dias_folga_int:
                         continue
 
                     comb, curr, valid = [], s_date, True
                     for lote in p_config:
-                        det = calculate_detail(lote, curr, h_dict)
+                        # Passamos agora a lista dias_folga_int
+                        det = calculate_detail(lote, curr, h_dict, dias_folga_int)
                         if det["fim_real"] > d_fim: valid = False; break
                         comb.append(det)
                         curr = det["fim_real"] + timedelta(days=2) # Intervalo mínimo
@@ -228,7 +246,7 @@ if st.button("🚀 Calcular Possibilidades"):
                 "Início": p["inicio"].strftime("%d/%m/%y"), 
                 "Janela Real": f"{p['inicio_real'].strftime('%d/%m')}—{p['fim_real'].strftime('%d/%m')}", 
                 "Feriados": p["feriados"], 
-                "FDS": p["fds"], 
+                "FDS/Folga": p["fds"], # Renomeado visualmente para fazer sentido se a pessoa não trabalhar quarta, por exemplo
                 "Eficiência": f"{p['eficiencia']:.0f}%" if p['eficiencia'] != float('inf') else "Inf%", 
                 "Ganho": f"+{p['qtd_total']}d" 
             } for p in r["comb"]]))
